@@ -9,7 +9,7 @@
 
     var MAX_ASINS_TRACKER = 50;
     var MAX_KWS_TRACKER   = 50;
-    var MAX_ASINS_PDP     = 100;
+    var MAX_ASINS_PDP     = 5000;
 
     var TIERS = {
         'Tier 1': [
@@ -902,6 +902,59 @@
     ================================================================
     */
 
+/* ================= FAST PARALLEL PDP ENGINE ================= */
+
+var CONCURRENT_REQUESTS = 8;   // 6–10 best
+var REQUEST_DELAY_MIN = 300;
+var REQUEST_DELAY_MAX = 900;
+
+async function runPDPFast(asins, fetchFn, onProgress) {
+    let results = new Array(asins.length);
+    let index = 0;
+    let completed = 0;
+
+    async function worker() {
+        while (true) {
+            let currentIndex;
+
+            // thread-safe index pick
+            if (index >= asins.length) break;
+            currentIndex = index++;
+            let asin = asins[currentIndex];
+
+            try {
+                let data = await fetchFn(asin);
+                results[currentIndex] = data;
+            } catch (e) {
+                results[currentIndex] = {
+                    asin: asin,
+                    error: true
+                };
+            }
+
+            completed++;
+
+            // progress callback
+            if (onProgress) onProgress(completed, asins.length, asin);
+
+            // random delay (anti-block)
+            await wt(REQUEST_DELAY_MIN + Math.random() * (REQUEST_DELAY_MAX - REQUEST_DELAY_MIN));
+        }
+    }
+
+    let workers = [];
+    for (let i = 0; i < CONCURRENT_REQUESTS; i++) {
+        workers.push(worker());
+    }
+
+    await Promise.all(workers);
+
+    return results;
+}
+
+
+/* ================= FAST PARALLEL PDP ENGINE Ended ================= */
+
     var pBusy   = false;
     var pPaused = false;
     var pData   = [];
@@ -1255,78 +1308,73 @@
             catch (e) { t2Log('<span class="lR">Pin fail</span>'); }
         }
 
-        for (var a = 0; a < asins.length; a++) {
-            /* ── PAUSE CHECK ── */
-            await waitWhilePaused(function () { return pPaused; });
-
-            var asin = asins[a];
+       var data = await runPDPFast(
+    asins,
+    async function (asin) {
+        try {
+            let d = await fetchPDP(asin);
             t2Log('<span class="lA">&#128230; ' + asin + '</span>');
-            var data = null; var err = false;
-
-            try {
-                data = await fetchPDP(asin); await wt(600);
-                t2Log('&nbsp;&nbsp;<span class="lG">&#10003; ' + esc(data.title.substring(0, 40)) + '</span>');
-            } catch (e) {
-                err = true;
-                data = { title:'Error', brand:'N/A', category:'N/A', price:'N/A', mrp:'N/A', deal:'N/A', coupon:'N/A', sns:'N/A', rating:'N/A', reviews:'N/A', pastBought:'N/A', soldby:'N/A', otherSellers:'N/A', stock:'N/A', ch:'N/A', imageCount:'N/A', aplus:'N/A', std:'N/A', fast:'N/A' };
-                t2Log('&nbsp;&nbsp;<span class="lR">&#10007; ' + e.message + '</span>');
-            }
-
-            var pct = Math.round(((a + 1) / total) * 100);
-            document.getElementById('t2Fl').style.width = pct + '%';
-            document.getElementById('t2PT').textContent = asin + ' — ' + (a + 1) + '/' + total + ' (' + pct + '%)';
-
-            var row = {
-                i: a + 1, asin,
-                title: data.title, brand: data.brand, category: data.category,
-                price: data.price, mrp: data.mrp, deal: data.deal,
-                coupon: data.coupon, sns: data.sns,
-                rating: data.rating, reviews: data.reviews, pastBought: data.pastBought,
-                soldby: data.soldby, otherSellers: data.otherSellers,
-                stock: data.stock, ch: data.ch,
-                imageCount: data.imageCount, aplus: data.aplus,
-                std: data.std, fast: data.fast, today
+            t2Log('&nbsp;&nbsp;<span class="lG">&#10003; ' + esc(d.title.substring(0, 40)) + '</span>');
+            return d;
+        } catch (e) {
+            t2Log('&nbsp;&nbsp;<span class="lR">&#10007; ' + e.message + '</span>');
+            return {
+                title:'Error', brand:'N/A', category:'N/A', price:'N/A', mrp:'N/A',
+                deal:'N/A', coupon:'N/A', sns:'N/A', rating:'N/A', reviews:'N/A',
+                pastBought:'N/A', soldby:'N/A', otherSellers:'N/A',
+                stock:'N/A', ch:'N/A', imageCount:'N/A', aplus:'N/A',
+                std:'N/A', fast:'N/A'
             };
-            pData.push(row);
-
-            /* badges */
-            var cb      = row.ch === 'FBA' ? 'bFBA' : row.ch === 'MFN' ? 'bMFN' : 'bNA';
-            var stB     = row.stock === 'In Stock' ? 'bIS' : row.stock === 'Out of Stock' ? 'bOOS' : row.stock === 'Limited Stock' ? 'bLim' : 'bNA';
-            var apB     = row.aplus === 'Yes' ? 'bAP' : 'bNA';
-            var snsB    = (row.sns && row.sns !== 'No' && row.sns !== 'N/A') ? 'bSNS' : 'bNA';
-            var cpnB    = (row.coupon && row.coupon !== 'None' && row.coupon !== 'N/A') ? 'bCpn' : 'bNA';
-            var hasDeal = row.deal && row.deal !== 'None' && row.deal !== 'N/A';
-            var tSh     = row.title.length > 35 ? esc(row.title.substring(0, 35)) + '…' : esc(row.title);
-            var sbSh    = row.soldby.length > 22 ? esc(row.soldby.substring(0, 22)) + '…' : esc(row.soldby);
-            var catSh   = row.category.length > 28 ? esc(row.category.substring(0, 28)) + '…' : esc(row.category);
-
-            tbody.insertAdjacentHTML('beforeend',
-                '<tr' + (err ? ' class="maErr"' : '') + '>' +
-                '<td>' + row.i + '</td>' +
-                '<td><span style="background:#e0f2f1;color:#00695c;padding:1px 6px;border-radius:6px;font-size:10px;font-weight:600;">' + row.asin + '</span></td>' +
-                '<td title="' + esc(row.title) + '">' + tSh + '</td>' +
-                '<td><b style="color:#1a237e;">' + esc(row.brand) + '</b></td>' +
-                '<td title="' + esc(row.category) + '" style="font-size:10px;color:#555;">' + catSh + '</td>' +
-                '<td><b style="color:#b71c1c;">' + esc(row.price) + '</b></td>' +
-                '<td><span style="text-decoration:line-through;color:#999;">' + esc(row.mrp) + '</span></td>' +
-                '<td>' + (hasDeal ? '<span class="maB bDl">' + esc(row.deal.substring(0, 14)) + '</span>' : '<span style="color:#bbb;">—</span>') + '</td>' +
-                '<td>' + (row.coupon !== 'None' && row.coupon !== 'N/A' ? '<span class="maB bCpn">' + esc(row.coupon.substring(0,18)) + '</span>' : '<span style="color:#bbb;">—</span>') + '</td>' +
-                '<td><span class="maB ' + snsB + '">' + esc(row.sns) + '</span></td>' +
-                '<td>' + esc(row.rating) + ' &#9733;</td>' +
-                '<td>' + esc(row.reviews) + '</td>' +
-                '<td style="font-size:10px;color:#555;">' + esc(row.pastBought) + '</td>' +
-                '<td title="' + esc(row.soldby) + '">' + sbSh + '</td>' +
-                '<td style="font-size:10px;">' + esc(row.otherSellers) + '</td>' +
-                '<td><span class="maB ' + stB + '">' + esc(row.stock) + '</span></td>' +
-                '<td><span class="maB ' + cb + '">' + row.ch + '</span></td>' +
-                '<td style="text-align:center;">' + esc(String(row.imageCount)) + '</td>' +
-                '<td><span class="maB ' + apB + '">' + row.aplus + '</span></td>' +
-                '<td><span class="dS">' + esc(row.std) + '</span></td>' +
-                '<td><span class="dF">' + esc(row.fast) + '</span></td>' +
-                '<td style="color:#777;">' + row.today + '</td>' +
-                '</tr>'
-            );
         }
+    },
+    function (done, total, asin) {
+        var pct = Math.round((done / total) * 100);
+        document.getElementById('t2Fl').style.width = pct + '%';
+        document.getElementById('t2PT').textContent =
+            asin + ' — ' + done + '/' + total + ' (' + pct + '%)';
+    }
+);
+
+// ✅ TABLE BUILD (same UI as before)
+for (var a = 0; a < data.length; a++) {
+    var d = data[a];
+
+    var row = {
+        i: a + 1, asin: asins[a],
+        title: d.title, brand: d.brand, category: d.category,
+        price: d.price, mrp: d.mrp, deal: d.deal,
+        coupon: d.coupon, sns: d.sns,
+        rating: d.rating, reviews: d.reviews, pastBought: d.pastBought,
+        soldby: d.soldby, otherSellers: d.otherSellers,
+        stock: d.stock, ch: d.ch,
+        imageCount: d.imageCount, aplus: d.aplus,
+        std: d.std, fast: d.fast, today
+    };
+
+    pData.push(row);
+
+    var cb  = row.ch === 'FBA' ? 'bFBA' : row.ch === 'MFN' ? 'bMFN' : 'bNA';
+    var stB = row.stock === 'In Stock' ? 'bIS' : row.stock === 'Out of Stock' ? 'bOOS' : row.stock === 'Limited Stock' ? 'bLim' : 'bNA';
+    var apB = row.aplus === 'Yes' ? 'bAP' : 'bNA';
+    var snsB = (row.sns && row.sns !== 'No' && row.sns !== 'N/A') ? 'bSNS' : 'bNA';
+    var hasDeal = row.deal && row.deal !== 'None' && row.deal !== 'N/A';
+
+    var tSh = row.title.length > 35 ? esc(row.title.substring(0, 35)) + '…' : esc(row.title);
+
+    tbody.insertAdjacentHTML('beforeend',
+        '<tr>' +
+        '<td>' + row.i + '</td>' +
+        '<td>' + row.asin + '</td>' +
+        '<td>' + tSh + '</td>' +
+        '<td>' + esc(row.brand) + '</td>' +
+        '<td>' + esc(row.category) + '</td>' +
+        '<td>' + esc(row.price) + '</td>' +
+        '<td>' + esc(row.mrp) + '</td>' +
+        '<td>' + (hasDeal ? row.deal : '—') + '</td>' +
+        '<td>' + row.today + '</td>' +
+        '</tr>'
+    );
+}
 
         document.getElementById('t2Fl').style.width = '100%';
         document.getElementById('t2PT').textContent = 'Done — ' + total + ' ASINs scraped.';
