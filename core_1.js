@@ -9,7 +9,7 @@
 
     var MAX_ASINS_TRACKER = 50;
     var MAX_KWS_TRACKER   = 50;
-    var MAX_ASINS_PDP     = 5000;
+    var MAX_ASINS_PDP   = 5000;
 
     var TIERS = {
         'Tier 1': [
@@ -72,13 +72,14 @@
     }
 
     function pAsins(raw, max) {
-        var out = [];
-        pList(raw, max).forEach(function (v) {
-            var a = v.toUpperCase();
-            if (/^[A-Z0-9]{10}$/.test(a) && out.indexOf(a) === -1) out.push(a);
-        });
-        return out;
+    var arr = raw.split(/[\s,]+/).filter(Boolean);
+
+    if (arr.length > max) {
+        arr = arr.slice(0, max);
     }
+
+    return arr;
+}
 
     function pKws(raw, max) {
         var out = [];
