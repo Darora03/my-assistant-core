@@ -1,0 +1,150 @@
+// ==UserScript==
+// @name         My Assistant — Loader
+// @namespace    http://tampermonkey.net/
+// @version      1.1
+// @description  Licensed tool loader. Paste your key to activate.
+// @author       you
+// @match        https://www.amazon.in/*
+// @grant        none
+// @run-at       document-end
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    var WORKER_URL  = "https://passkeyv1.devkaran-arora.workers.dev/";
+    var STORAGE_KEY = 'ma_license_key';
+    var TIMEOUT_MS  = 10000; // 10 seconds
+
+    // ── Fetch with timeout ──
+    function fetchWithTimeout(url, options, ms) {
+        var controller = new AbortController();
+        var timer = setTimeout(function () { controller.abort(); }, ms);
+        return fetch(url, Object.assign({}, options, { signal: controller.signal }))
+            .then(function (res) { clearTimeout(timer); return res; })
+            .catch(function (err) {
+                clearTimeout(timer);
+                if (err.name === 'AbortError') throw new Error('Request timed out. Check your connection and try again.');
+                throw err;
+            });
+    }
+
+    function injectKeyCSS() {
+        if (document.getElementById('maKeyCSS')) return;
+        var s = document.createElement('style');
+        s.id = 'maKeyCSS';
+        s.textContent = `
+#maKeyOverlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483647;display:flex;align-items:center;justify-content:center;font-family:"Segoe UI",Arial,sans-serif;}
+#maKeyBox{background:#fff;border-radius:14px;padding:32px 36px;width:360px;box-shadow:0 12px 48px rgba(0,0,0,.28);text-align:center;}
+#maKeyBox h2{margin:0 0 6px;font-size:18px;color:#1a1a2e;}
+#maKeyBox p{font-size:12px;color:#888;margin:0 0 20px;}
+#maKeyInput{width:100%;padding:10px 14px;font-size:14px;border:2px solid #ddd;border-radius:8px;box-sizing:border-box;outline:none;letter-spacing:1px;text-align:center;font-family:Consolas,monospace;transition:border-color .2s;}
+#maKeyInput:focus{border-color:#0070c9;}
+#maKeyInput.err{border-color:#e53935;animation:maShake .3s;}
+@keyframes maShake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+#maKeyBtn{margin-top:14px;width:100%;padding:11px;border:none;border-radius:8px;background:#1a1a2e;color:#fff;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .15s;}
+#maKeyBtn:hover{opacity:.88;}
+#maKeyBtn:disabled{opacity:.5;cursor:not-allowed;}
+#maKeyErr{margin-top:10px;font-size:12px;color:#e53935;min-height:16px;}
+#maKeySpin{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:maSpin .6s linear infinite;}
+@keyframes maSpin{to{transform:rotate(360deg);}}
+        `;
+        document.head.appendChild(s);
+    }
+
+    function showKeyPrompt() {
+        injectKeyCSS();
+        var overlay = document.createElement('div');
+        overlay.id = 'maKeyOverlay';
+        overlay.innerHTML = `
+<div id="maKeyBox">
+  <h2>&#128272; My Assistant</h2>
+  <p>Enter your license key to activate the tool.</p>
+  <input id="maKeyInput" type="text" placeholder="Enter license key" autocomplete="off">
+  <button id="maKeyBtn">Activate</button>
+  <div id="maKeyErr"></div>
+</div>`;
+        document.body.appendChild(overlay);
+
+        var inp = document.getElementById('maKeyInput');
+        var btn = document.getElementById('maKeyBtn');
+        var err = document.getElementById('maKeyErr');
+        inp.focus();
+
+        inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') btn.click(); });
+
+        btn.addEventListener('click', function () {
+            var key = inp.value.trim();
+            if (!key) {
+                inp.classList.add('err');
+                setTimeout(function () { inp.classList.remove('err'); }, 600);
+                err.textContent = 'Please enter your license key.';
+                return;
+            }
+            btn.disabled = true;
+            btn.innerHTML = '<span id="maKeySpin"></span> Validating...';
+            err.textContent = '';
+
+            fetchWithTimeout(WORKER_URL, {
+                method: 'GET',
+                headers: { 'X-License-Key': key },
+                mode: 'cors',
+                cache: 'no-store',
+                redirect: 'follow'
+            }, TIMEOUT_MS)
+            .then(function (res) {
+                if (res.status === 403) return res.json().then(function (d) { throw new Error(d.message || 'Invalid license key'); });
+                if (!res.ok) throw new Error('Server error. Try again later.');
+                return res.text();
+            })
+            .then(function (scriptText) {
+                try { localStorage.setItem(STORAGE_KEY, key); } catch (e) {}
+                overlay.remove();
+                var sc = document.createElement('script');
+                sc.textContent = scriptText;
+                document.head.appendChild(sc);
+            })
+            .catch(function (e) {
+                btn.disabled = false;
+                btn.innerHTML = 'Activate';
+                inp.classList.add('err');
+                setTimeout(function () { inp.classList.remove('err'); }, 600);
+                err.textContent = '❌ ' + e.message;
+            });
+        });
+    }
+
+    function boot() {
+        var savedKey = '';
+        try { savedKey = localStorage.getItem(STORAGE_KEY) || ''; } catch (e) {}
+
+        if (savedKey) {
+            fetchWithTimeout(WORKER_URL, {
+                method: 'GET',
+                headers: { 'X-License-Key': savedKey },
+                mode: 'cors',
+                cache: 'no-store',
+                redirect: 'follow'
+            }, TIMEOUT_MS)
+            .then(function (res) {
+                if (!res.ok) throw new Error('Key revoked or invalid');
+                return res.text();
+            })
+            .then(function (scriptText) {
+                var sc = document.createElement('script');
+                sc.textContent = scriptText;
+                document.head.appendChild(sc);
+            })
+            .catch(function () {
+                try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+                showKeyPrompt();
+            });
+        } else {
+            showKeyPrompt();
+        }
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+
+})();
